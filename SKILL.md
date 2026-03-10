@@ -2,333 +2,292 @@
 name: wordpress-poster
 description: >
   Publish, manage, and interact with WordPress content via the WordPress REST API.
-  Use this skill whenever the user wants to create, update, read, or delete WordPress posts,
-  pages, categories, or tags — including drafting content, uploading media, or managing
-  post metadata. Trigger when the user mentions WordPress, wp-json, publishing a blog post,
-  updating a page, or any workflow involving a WordPress site. Also trigger when the user
-  says "post this to my blog", "add a draft to WordPress", or "schedule a WordPress article".
+  Use this skill whenever the user wants to create, update, read, or delete WordPress
+  posts, pages, categories, or tags — including drafting content, uploading media,
+  batch importing from JSON/CSV, or using Claude AI to auto-generate and publish posts.
+  Trigger when the user mentions WordPress, publishing a blog post, updating a page,
+  batch importing articles, scheduling posts, uploading images to WordPress, or
+  auto-generating blog content with AI. Also trigger for "post this to my blog",
+  "add a draft to WordPress", "bulk import articles", or "write and publish a post".
   Always uses .env for credentials and uv for Python.
 ---
 
 # WordPress Poster Skill
 
-Automates WordPress content management via the **WordPress REST API (v2)**.
+Automates WordPress content management via the **WordPress REST API (v2)**.  
 Credentials are always loaded from a `.env` file — never hardcoded.
+
+---
+
+## Scripts Overview
+
+| 腳本 | 功能 |
+|------|------|
+| `scripts/wp_poster.py` | Posts CRUD、媒體上傳（含 WebP 轉換）、Categories |
+| `scripts/wp_pages.py`  | Pages 完整 CRUD、層級樹狀結構 |
+| `scripts/wp_batch.py`  | 批量匯入文章（JSON / CSV）、乾跑模式 |
+| `scripts/wp_ai_writer.py` | Claude AI 自動生成文章並發布至 WordPress |
 
 ---
 
 ## Environment Setup
 
-Before running any script, ensure a `.env` file exists with:
-
 ```dotenv
 # .env
-WP_URL=https://your-site.com          # No trailing slash
+WP_URL=https://your-site.com
 WP_USERNAME=your_wp_username
-WP_APP_PASSWORD=xxxx xxxx xxxx xxxx   # Application Password (with spaces OK)
+WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+
+# Claude API（wp_ai_writer.py 需要）
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+
+# AI 寫文預設值（選填）
+WP_AI_DEFAULT_CATEGORY=1
+WP_AI_DEFAULT_STATUS=draft
 ```
 
-**How to generate an Application Password:**
-1. WordPress Admin → Users → Your Profile
-2. Scroll to **Application Passwords**
-3. Enter a name (e.g., "Claude API") → Click **Add New Application Password**
-4. Copy the generated password (spaces included are fine)
+**Application Password 取得方式：**  
+WordPress Admin → Users → Profile → Application Passwords → Add New
 
 ---
 
 ## Quick Start
 
 ```bash
-# Initialize project with uv
-uv init wp-project
-cd wp-project
-uv add httpx python-dotenv
+uv init my-wp-project && cd my-wp-project
+uv add httpx python-dotenv          # 基本功能
+uv add Pillow                       # WebP 轉換（選填）
+uv add anthropic                    # AI 寫文（選填）
 ```
 
 ---
 
-## Core Script: `wp_poster.py`
+## 1. Posts 管理（wp_poster.py）
 
-Use this as the base for all WordPress operations:
-
-```python
-# wp_poster.py
-import httpx
-import base64
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-WP_URL      = os.getenv("WP_URL", "").rstrip("/")
-USERNAME    = os.getenv("WP_USERNAME", "")
-APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
-
-def _auth_headers() -> dict:
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    return {
-        "Authorization": f"Basic {token}",
-        "Content-Type": "application/json",
-    }
-
-def create_post(
-    title: str,
-    content: str,
-    status: str = "draft",          # draft | publish | pending | private
-    categories: list[int] | None = None,
-    tags: list[int] | None = None,
-    excerpt: str = "",
-    slug: str = "",
-) -> dict:
-    """Create a new WordPress post."""
-    payload: dict = {
-        "title":   title,
-        "content": content,
-        "status":  status,
-        "excerpt": excerpt,
-    }
-    if slug:
-        payload["slug"] = slug
-    if categories:
-        payload["categories"] = categories
-    if tags:
-        payload["tags"] = tags
-
-    resp = httpx.post(
-        f"{WP_URL}/wp-json/wp/v2/posts",
-        json=payload,
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def update_post(post_id: int, **fields) -> dict:
-    """Update an existing post by ID."""
-    resp = httpx.post(
-        f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        json=fields,
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_post(post_id: int) -> dict:
-    """Fetch a single post by ID."""
-    resp = httpx.get(
-        f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def list_posts(per_page: int = 10, page: int = 1, status: str = "any") -> list[dict]:
-    """List posts with pagination."""
-    resp = httpx.get(
-        f"{WP_URL}/wp-json/wp/v2/posts",
-        params={"per_page": per_page, "page": page, "status": status},
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def delete_post(post_id: int, force: bool = False) -> dict:
-    """Delete (trash) a post. Use force=True to permanently delete."""
-    resp = httpx.delete(
-        f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        params={"force": str(force).lower()},
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def list_categories() -> list[dict]:
-    """List all categories."""
-    resp = httpx.get(
-        f"{WP_URL}/wp-json/wp/v2/categories",
-        params={"per_page": 100},
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def create_category(name: str, slug: str = "", parent: int = 0) -> dict:
-    """Create a new category."""
-    payload: dict = {"name": name}
-    if slug:
-        payload["slug"] = slug
-    if parent:
-        payload["parent"] = parent
-    resp = httpx.post(
-        f"{WP_URL}/wp-json/wp/v2/categories",
-        json=payload,
-        headers=_auth_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def upload_media(file_path: str, title: str = "") -> dict:
-    """Upload an image or file as WordPress media."""
-    import mimetypes
-    mime_type, _ = mimetypes.guess_type(file_path)
-    filename = os.path.basename(file_path)
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {token}",
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Type": mime_type or "application/octet-stream",
-    }
-    if title:
-        headers["X-WP-Media-Title"] = title
-
-    with open(file_path, "rb") as f:
-        resp = httpx.post(
-            f"{WP_URL}/wp-json/wp/v2/media",
-            content=f.read(),
-            headers=headers,
-            timeout=60,
-        )
-    resp.raise_for_status()
-    return resp.json()
-```
-
----
-
-## Usage Examples
-
-### 建立草稿
+### 建立文章
 
 ```python
+from scripts.wp_poster import create_post, update_post, list_posts
+
+# 草稿
 result = create_post(
     title="我的新文章",
-    content="<p>這是文章內容，支援 HTML 格式。</p>",
+    content="<h2>副標</h2><p>內文...</p>",
+    status="draft",
+    categories=[3],
+    tags=[7, 12],
+)
+print(f"ID={result['id']}  連結={result['link']}")
+```
+
+### 更新 / 發布
+
+```python
+update_post(42, title="新標題", status="publish")
+```
+
+### 媒體上傳（含 WebP）
+
+```python
+from scripts.wp_poster import upload_media
+
+# 直接上傳
+media = upload_media("/path/to/photo.jpg")
+
+# 自動轉 WebP（需 Pillow）
+media = upload_media("/path/to/photo.png", convert_webp=True, webp_quality=85)
+media = upload_media("/path/to/icon.png",  convert_webp=True, webp_lossless=True)
+```
+
+**CLI：**
+```bash
+uv run scripts/wp_poster.py list
+uv run scripts/wp_poster.py create "標題"
+uv run scripts/wp_poster.py upload photo.jpg --webp --quality 90
+```
+
+---
+
+## 2. Pages 管理（wp_pages.py）
+
+### CRUD
+
+```python
+from scripts.wp_pages import create_page, update_page, list_pages, page_tree
+
+# 建立頁面（頂層）
+page = create_page(title="關於我們", content="<p>...</p>", status="publish")
+
+# 建立子頁面
+sub = create_page(title="團隊介紹", content="<p>...</p>", parent=page["id"])
+
+# 更新頁面順序
+update_page(page["id"], menu_order=2)
+
+# 取得所有頁面（樹狀）
+tree = page_tree()
+```
+
+**CLI：**
+```bash
+uv run scripts/wp_pages.py list
+uv run scripts/wp_pages.py tree                         # 顯示層級結構
+uv run scripts/wp_pages.py create "關於我們" "<p>內文</p>"
+uv run scripts/wp_pages.py update 12 --title "新標題" --status publish
+uv run scripts/wp_pages.py delete 12                   # 移至垃圾桶
+uv run scripts/wp_pages.py delete 12 --force           # 永久刪除
+```
+
+---
+
+## 3. 批量發文（wp_batch.py）
+
+### 準備匯入檔案
+
+**JSON 格式（posts.json）：**
+```json
+[
+  {
+    "title": "文章一",
+    "content": "<p>HTML 內文</p>",
+    "status": "draft",
+    "excerpt": "摘要",
+    "slug": "article-one",
+    "categories": [1],
+    "tags": [2, 3],
+    "image_path": "/path/to/cover.jpg"
+  }
+]
+```
+
+**CSV 格式（posts.csv）：**
+```
+title,content,status,categories,tags,image_path
+文章一,<p>內文</p>,draft,"1,2","3,4",/path/cover.jpg
+```
+
+### 執行匯入
+
+```python
+from scripts.wp_batch import batch_import
+
+summary = batch_import(
+    file_path="posts.json",
+    default_status="draft",
+    dry_run=False,       # True = 只預覽不發文
+    convert_webp=True,   # 自動轉 WebP
+    delay=0.5,           # 每篇間隔秒數
+)
+```
+
+**CLI：**
+```bash
+# 乾跑（先確認資料無誤）
+uv run scripts/wp_batch.py import posts.json --dry-run
+
+# 正式匯入
+uv run scripts/wp_batch.py import posts.json
+uv run scripts/wp_batch.py import posts.csv --status publish --webp
+
+# 產生範本
+uv run scripts/wp_batch.py template --format json > posts_template.json
+uv run scripts/wp_batch.py template --format csv  > posts_template.csv
+```
+
+匯入完成後自動產生 `posts_import_log.json` 記錄每篇結果。
+
+---
+
+## 4. AI 自動生成文章（wp_ai_writer.py）
+
+需要 `.env` 中設定 `ANTHROPIC_API_KEY`。
+
+### 單篇生成
+
+```python
+from scripts.wp_ai_writer import write_post
+
+result = write_post(
+    topic="CAR-T 細胞療法的最新進展",
+    language="zh-TW",       # zh-TW | zh-CN | en | ja
+    word_count=800,
+    tone="professional",    # professional | casual | educational
     status="draft",
 )
-print(f"已建立草稿 ID={result['id']}，連結={result['link']}")
+# result["post"]["id"], result["post"]["link"]
 ```
 
-### 直接發布
+### 批量生成（topics.txt，每行一個主題）
+
+```
+# topics.txt
+Flow cytometry 基礎介紹
+CAR-T 細胞療法原理
+PBMC 分離技術
+```
 
 ```python
-result = create_post(
-    title="立即發布的文章",
-    content="<h2>副標題</h2><p>內文...</p>",
-    status="publish",
-    categories=[3],   # category ID
-    tags=[7, 12],     # tag IDs
+from scripts.wp_ai_writer import batch_write
+
+results = batch_write(
+    topics_file="topics.txt",
+    language="zh-TW",
+    status="draft",
+    delay=3.0,     # Claude API rate limit 緩衝
 )
 ```
 
-### 更新文章
-
-```python
-result = update_post(42, title="新標題", status="publish")
-```
-
-### 列出最新 10 篇草稿
-
-```python
-posts = list_posts(per_page=10, status="draft")
-for p in posts:
-    print(p["id"], p["title"]["rendered"])
-```
-
-### 上傳圖片並設為特色圖片
-
-```python
-media = upload_media("/path/to/cover.jpg", title="封面圖")
-update_post(post_id, featured_media=media["id"])
-```
-
-### 上傳圖片並自動轉換為 WebP
-
-WebP 轉換需要 Pillow：`uv add Pillow`
-
-```python
-# 標準 lossy WebP（quality=85，推薦）
-media = upload_media(
-    "/path/to/photo.jpg",
-    convert_webp=True,
-)
-
-# 指定品質 1–100
-media = upload_media(
-    "/path/to/photo.jpg",
-    convert_webp=True,
-    webp_quality=90,
-)
-
-# Lossless WebP（無損，適合 PNG 圖示、精確圖形）
-media = upload_media(
-    "/path/to/icon.png",
-    convert_webp=True,
-    webp_lossless=True,
-)
-```
-
-上傳時會自動印出節省空間的資訊：
-```
-WebP 轉換完成: photo.jpg → photo.webp (320,000 → 98,000 bytes, 節省 69.4%)
-```
-
-**支援輸入格式：** JPEG、PNG、BMP、TIFF、GIF（靜態）  
-**透明度：** RGBA / PNG 透明圖片自動保留 alpha 通道  
-**CLI 用法：**
+**CLI：**
 ```bash
-uv run scripts/wp_poster.py upload photo.jpg --webp
-uv run scripts/wp_poster.py upload photo.jpg --webp --quality 90
-uv run scripts/wp_poster.py upload icon.png  --webp --lossless
+# 單篇草稿
+uv run scripts/wp_ai_writer.py write "CAR-T 細胞療法"
+
+# 指定語言、字數、直接發布
+uv run scripts/wp_ai_writer.py write "Flow cytometry" --lang en --words 800 --status publish
+
+# 互動模式（預覽後再決定）
+uv run scripts/wp_ai_writer.py interactive "文章主題"
+
+# 批量生成
+uv run scripts/wp_ai_writer.py batch topics.txt --delay 3
 ```
 
 ---
 
 ## Common Operations Reference
 
-| 操作 | HTTP Method | Endpoint |
-|------|------------|---------|
-| 新增文章 | POST | `/wp-json/wp/v2/posts` |
-| 更新文章 | POST | `/wp-json/wp/v2/posts/{id}` |
-| 刪除文章 | DELETE | `/wp-json/wp/v2/posts/{id}` |
-| 列出分類 | GET | `/wp-json/wp/v2/categories` |
-| 上傳媒體 | POST | `/wp-json/wp/v2/media` |
-| 新增頁面 | POST | `/wp-json/wp/v2/pages` |
+| 操作 | 腳本 | Endpoint |
+|------|------|---------|
+| Posts CRUD | wp_poster.py | `/wp-json/wp/v2/posts` |
+| Pages CRUD | wp_pages.py | `/wp-json/wp/v2/pages` |
+| 媒體上傳 | wp_poster.py | `/wp-json/wp/v2/media` |
+| 分類管理 | wp_poster.py | `/wp-json/wp/v2/categories` |
+| 批量匯入 | wp_batch.py | （多次呼叫 posts endpoint）|
+| AI 生成 | wp_ai_writer.py | Claude API + WP posts |
 
 ---
 
-## Error Handling Best Practices
+## Error Handling
 
 ```python
 try:
-    result = create_post(title="測試", content="內容", status="publish")
+    result = create_post(...)
 except httpx.HTTPStatusError as e:
-    print(f"HTTP 錯誤 {e.response.status_code}: {e.response.text}")
-except httpx.ConnectError:
-    print("無法連線到 WordPress，請確認 WP_URL 是否正確")
+    print(f"HTTP {e.response.status_code}: {e.response.text}")
 ```
 
 **常見錯誤：**
-- `401 Unauthorized` → 檢查 `.env` 中的 `WP_USERNAME` 與 `WP_APP_PASSWORD`
-- `403 Forbidden` → 該使用者權限不足（需要 Editor 或 Administrator）
-- `404 Not Found` → REST API 可能被停用，或網址設定錯誤
+- `401` → 檢查 WP_USERNAME / WP_APP_PASSWORD
+- `403` → 使用者權限不足（需 Editor 以上）
+- `404` → WP_URL 設定錯誤，或 REST API 被停用
+- Claude API `429` → 觸發 rate limit，增加 batch_write 的 delay
 
 ---
 
-## Notes
+## Dependencies
 
-- `content` 欄位支援 **HTML**，可直接傳入 HTML 字串
-- `status` 可為：`draft`（草稿）、`publish`（發布）、`pending`（待審）、`private`（私密）
-- Application Password 中的空格不影響認證，可保留或移除
-- 若網站有 Cloudflare 或安全外掛，需確認 REST API 白名單已開放
+```bash
+uv add httpx python-dotenv    # 必要
+uv add Pillow                 # WebP 轉換（wp_poster / wp_batch）
+uv add anthropic              # AI 生成（wp_ai_writer，選填，也可直接用 httpx）
+```
