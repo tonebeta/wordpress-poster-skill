@@ -250,15 +250,47 @@ for p in posts:
 
 ```python
 media = upload_media("/path/to/cover.jpg", title="封面圖")
-featured_id = media["id"]
-create_post(
-    title="附圖的文章",
-    content="<p>內文</p>",
-    status="publish",
-    # 在 payload 加入 featured_media
+update_post(post_id, featured_media=media["id"])
+```
+
+### 上傳圖片並自動轉換為 WebP
+
+WebP 轉換需要 Pillow：`uv add Pillow`
+
+```python
+# 標準 lossy WebP（quality=85，推薦）
+media = upload_media(
+    "/path/to/photo.jpg",
+    convert_webp=True,
 )
-# 或用 update_post:
-update_post(post_id, featured_media=featured_id)
+
+# 指定品質 1–100
+media = upload_media(
+    "/path/to/photo.jpg",
+    convert_webp=True,
+    webp_quality=90,
+)
+
+# Lossless WebP（無損，適合 PNG 圖示、精確圖形）
+media = upload_media(
+    "/path/to/icon.png",
+    convert_webp=True,
+    webp_lossless=True,
+)
+```
+
+上傳時會自動印出節省空間的資訊：
+```
+WebP 轉換完成: photo.jpg → photo.webp (320,000 → 98,000 bytes, 節省 69.4%)
+```
+
+**支援輸入格式：** JPEG、PNG、BMP、TIFF、GIF（靜態）  
+**透明度：** RGBA / PNG 透明圖片自動保留 alpha 通道  
+**CLI 用法：**
+```bash
+uv run scripts/wp_poster.py upload photo.jpg --webp
+uv run scripts/wp_poster.py upload photo.jpg --webp --quality 90
+uv run scripts/wp_poster.py upload icon.png  --webp --lossless
 ```
 
 ---
