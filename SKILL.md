@@ -200,57 +200,50 @@ uv run scripts/wp_batch.py template --format csv  > posts_template.csv
 
 ## 4. AI 自動生成文章（wp_ai_writer.py）
 
-需要 `.env` 中設定 `ANTHROPIC_API_KEY`。
+**不需要 `ANTHROPIC_API_KEY`。** 文章由 Claude（對話環境）生成，此腳本只負責發布。
 
-### 單篇生成
+### 工作流程
+
+```
+你在對話中告訴 Claude 主題
+    → Claude 生成 title / content / excerpt（JSON）
+    → wp_ai_writer.py 發布至 WordPress
+```
+
+### Python API
 
 ```python
-from scripts.wp_ai_writer import write_post
+from scripts.wp_ai_writer import publish_generated
 
-result = write_post(
-    topic="CAR-T 細胞療法的最新進展",
-    language="zh-TW",       # zh-TW | zh-CN | en | ja
-    word_count=800,
-    tone="professional",    # professional | casual | educational
+# Claude 已生成內容後，直接呼叫發布
+post = publish_generated(
+    title="CAR-T 細胞療法的最新進展",
+    content="<h2>背景</h2><p>CAR-T 是一種...</p>",
+    excerpt="本文介紹 CAR-T 療法的最新臨床應用。",
     status="draft",
+    categories=[3],
 )
-# result["post"]["id"], result["post"]["link"]
+print(post["link"])
 ```
 
-### 批量生成（topics.txt，每行一個主題）
+### CLI
 
-```
-# topics.txt
-Flow cytometry 基礎介紹
-CAR-T 細胞療法原理
-PBMC 分離技術
-```
-
-```python
-from scripts.wp_ai_writer import batch_write
-
-results = batch_write(
-    topics_file="topics.txt",
-    language="zh-TW",
-    status="draft",
-    delay=3.0,     # Claude API rate limit 緩衝
-)
-```
-
-**CLI：**
 ```bash
-# 單篇草稿
-uv run scripts/wp_ai_writer.py write "CAR-T 細胞療法"
+# 發布 JSON 字串（Claude 在對話中直接呼叫）
+uv run scripts/wp_ai_writer.py publish '{"title":"標題","content":"<p>內文</p>","status":"draft"}'
 
-# 指定語言、字數、直接發布
-uv run scripts/wp_ai_writer.py write "Flow cytometry" --lang en --words 800 --status publish
+# 發布 JSON 檔案（單篇或陣列）
+uv run scripts/wp_ai_writer.py publish-file generated.json
 
-# 互動模式（預覽後再決定）
-uv run scripts/wp_ai_writer.py interactive "文章主題"
-
-# 批量生成
-uv run scripts/wp_ai_writer.py batch topics.txt --delay 3
+# 互動模式：貼上 JSON 後確認
+uv run scripts/wp_ai_writer.py interactive
 ```
+
+### 典型對話流程
+
+1. 你：「幫我寫一篇關於流式細胞術的文章，繁中，約 600 字」
+2. Claude 生成內容並產出 JSON
+3. Claude 呼叫 `publish_generated()` 直接發布至你的 WordPress
 
 ---
 
