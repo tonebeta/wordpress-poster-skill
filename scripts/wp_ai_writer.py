@@ -32,40 +32,16 @@ JSON 格式：
   "og_description":   "社群分享描述（選填）"
 }
 """
-import base64
 import json
 import os
 import sys
+
 import httpx
-from dotenv import load_dotenv
+from wp_client import WP_URL, auth_headers, check_env
+from wp_seo import generate_seo_fields, get_plugin, update_seo
 
-load_dotenv()
-
-WP_URL         = os.getenv("WP_URL", "").rstrip("/")
-USERNAME       = os.getenv("WP_USERNAME", "")
-APP_PASSWORD   = os.getenv("WP_APP_PASSWORD", "")
 DEFAULT_STATUS = os.getenv("WP_AI_DEFAULT_STATUS", "draft")
 DEFAULT_CAT    = int(os.getenv("WP_AI_DEFAULT_CATEGORY", "0") or "0")
-
-# Lazy-import seo module (same package)
-_seo = None
-
-def _get_seo():
-    global _seo
-    if _seo is None:
-        import importlib.util, pathlib
-        spec = importlib.util.spec_from_file_location(
-            "wp_seo",
-            pathlib.Path(__file__).parent / "wp_seo.py",
-        )
-        _seo = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_seo)
-    return _seo
-
-
-def _auth_headers() -> dict:
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 
 
 def publish_generated(
@@ -104,14 +80,13 @@ def publish_generated(
     Returns:
         WordPress post object (includes 'id', 'link', 'status').
     """
-    # Auto-generate SEO fields if not provided
+    # Auto-generate SEO fields from title+content if not provided
     if auto_seo and not seo_title and not meta_description:
-        seo = _get_seo()
-        suggested = seo.generate_seo_fields(title, content, focus_keyword)
-        seo_title        = seo_title        or suggested["seo_title"]
-        meta_description = meta_description or suggested["meta_description"]
-        og_title         = og_title         or suggested["og_title"]
-        og_description   = og_description   or suggested["og_description"]
+        suggested = generate_seo_fields(title, content, focus_keyword)
+        seo_title        = seo_title        or suggested.get("seo_title", "")
+        meta_description = meta_description or suggested.get("meta_description", "")
+        og_title         = og_title         or suggested.get("og_title", "")
+        og_description   = og_description   or suggested.get("og_description", "")
 
     payload: dict = {
         "title":   title,
@@ -122,26 +97,22 @@ def publish_generated(
         payload["excerpt"] = excerpt
 
     cats = categories or ([DEFAULT_CAT] if DEFAULT_CAT else [])
-    if cats:   payload["categories"] = cats
-    if tags:   payload["tags"] = tags
+    if cats:  payload["categories"] = cats
+    if tags:  payload["tags"] = tags
 
     # Step 1: create the post
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
-        json=payload, headers=_auth_headers(), timeout=30,
+        json=payload, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     post = resp.json()
     post_id = post["id"]
 
-    # Step 2: write SEO meta (best-effort — skip if plugin not detected)
+    # Step 2: write SEO meta (best-effort — skip if no plugin detected)
     if any([seo_title, meta_description, focus_keyword, og_title, og_description]):
         try:
-            seo = _get_seo()
-            seo.WP_URL       = WP_URL
-            seo.USERNAME     = USERNAME
-            seo.APP_PASSWORD = APP_PASSWORD
-            seo.update_seo(
+            update_seo(
                 post_id=post_id,
                 seo_title=seo_title,
                 meta_description=meta_description,
@@ -149,7 +120,7 @@ def publish_generated(
                 og_title=og_title,
                 og_description=og_description,
             )
-            print(f"   SEO meta 已寫入（外掛：{seo.get_plugin()}）")
+            print(f"   SEO meta 已寫入（外掛：{get_plugin()}）")
         except RuntimeError as e:
             print(f"   ⚠️  SEO meta 跳過：{e}")
         except Exception as e:
@@ -159,7 +130,7 @@ def publish_generated(
 
 
 def publish_from_dict(data: dict) -> dict:
-    """Convenience wrapper: publish from Claude's JSON output dict."""
+    """Convenience wrapper: publish from a Claude-generated JSON dict."""
     return publish_generated(
         title=data["title"],
         content=data["content"],
@@ -178,8 +149,10 @@ def publish_from_dict(data: dict) -> dict:
 
 # ── CLI ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not all([WP_URL, USERNAME, APP_PASSWORD]):
-        print("❌ 請先設定 .env：WP_URL, WP_USERNAME, WP_APP_PASSWORD")
+    try:
+        check_env()
+    except EnvironmentError as e:
+        print(e)
         sys.exit(1)
 
     action = sys.argv[1] if len(sys.argv) > 1 else "help"
@@ -199,14 +172,19 @@ if __name__ == "__main__":
             print(f"[{i}/{len(records)}] ✅ ID={post['id']}  {post['link']}")
 
     elif action == "interactive":
-        print("請貼上 Claude 生成的 JSON 內容（貼完後按 Enter 兩次）：")
-        lines = []
-        while True:
-            line = input()
-            if line == "" and lines:
-                break
-            lines.append(line)
-        data = json.loads("\n".join(lines))
+        # Read until EOF (Ctrl+D) to support multi-line / multi-paragraph JSON
+        print("請貼上 Claude 生成的 JSON 內容，完成後按 Ctrl+D：")
+        try:
+            data_str = sys.stdin.read()
+        except KeyboardInterrupt:
+            print("\n已取消。")
+            sys.exit(0)
+
+        if not data_str.strip():
+            print("未輸入任何內容，已取消。")
+            sys.exit(0)
+
+        data = json.loads(data_str)
         records = data if isinstance(data, list) else [data]
         print(f"\n準備發布 {len(records)} 篇文章：")
         for r in records:

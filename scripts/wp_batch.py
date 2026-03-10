@@ -33,26 +33,15 @@ CSV 格式（第一列為欄位名稱）:
 title,content,status,excerpt,slug,categories,tags,image_path
 文章標題,<p>內文</p>,draft,摘要,my-slug,"1,2","3,4",/path/cover.jpg
 """
-import base64
 import csv
 import json
 import os
 import sys
 import time
-import httpx
-from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv()
-
-WP_URL       = os.getenv("WP_URL", "").rstrip("/")
-USERNAME     = os.getenv("WP_USERNAME", "")
-APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
-
-
-def _auth_headers() -> dict:
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+import httpx
+from wp_client import WP_URL, auth_headers, media_headers, check_env
 
 
 def _upload_image(
@@ -63,8 +52,6 @@ def _upload_image(
     """Upload image, optionally convert to WebP. Returns media ID."""
     import mimetypes
     import io
-
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
 
     if convert_webp:
         try:
@@ -91,14 +78,10 @@ def _upload_image(
         with open(file_path, "rb") as f:
             file_bytes = f.read()
         filename  = Path(file_path).name
-        mime_type, _ = __import__("mimetypes").guess_type(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or "application/octet-stream"
 
-    headers = {
-        "Authorization": f"Basic {token}",
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Type": mime_type,
-    }
+    headers = media_headers(filename, mime_type)
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/media",
         content=file_bytes, headers=headers, timeout=60,
@@ -110,7 +93,7 @@ def _upload_image(
 def _create_post(payload: dict) -> dict:
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
-        json=payload, headers=_auth_headers(), timeout=30,
+        json=payload, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -276,8 +259,10 @@ if __name__ == "__main__":
             print("用法: uv run scripts/wp_batch.py import <file.json|file.csv> [options]")
             sys.exit(1)
 
-        if not all([WP_URL, USERNAME, APP_PASSWORD]):
-            print("❌ 請先設定 .env：WP_URL, WP_USERNAME, WP_APP_PASSWORD")
+        try:
+            check_env()
+        except EnvironmentError as e:
+            print(e)
             sys.exit(1)
 
         args = sys.argv[3:]

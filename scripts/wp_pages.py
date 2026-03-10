@@ -10,23 +10,11 @@ Usage:
     uv run scripts/wp_pages.py delete <id>
     uv run scripts/wp_pages.py tree
 """
-import base64
-import os
-import sys
 import json
+import sys
+
 import httpx
-from dotenv import load_dotenv
-
-load_dotenv()
-
-WP_URL       = os.getenv("WP_URL", "").rstrip("/")
-USERNAME     = os.getenv("WP_USERNAME", "")
-APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
-
-
-def _auth_headers() -> dict:
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+from wp_client import WP_URL, auth_headers, check_env
 
 
 # ── Pages CRUD ────────────────────────────────────────────────
@@ -51,7 +39,7 @@ def list_pages(
         params["parent"] = parent
     resp = httpx.get(
         f"{WP_URL}/wp-json/wp/v2/pages",
-        params=params, headers=_auth_headers(), timeout=30,
+        params=params, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -61,7 +49,7 @@ def get_page(page_id: int) -> dict:
     """Fetch a single page by ID."""
     resp = httpx.get(
         f"{WP_URL}/wp-json/wp/v2/pages/{page_id}",
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -93,7 +81,7 @@ def create_page(
 
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/pages",
-        json=payload, headers=_auth_headers(), timeout=30,
+        json=payload, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -107,7 +95,7 @@ def update_page(page_id: int, **fields) -> dict:
     """
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/pages/{page_id}",
-        json=fields, headers=_auth_headers(), timeout=30,
+        json=fields, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -118,18 +106,33 @@ def delete_page(page_id: int, force: bool = False) -> dict:
     resp = httpx.delete(
         f"{WP_URL}/wp-json/wp/v2/pages/{page_id}",
         params={"force": str(force).lower()},
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _fetch_all_pages() -> list[dict]:
+    """Fetch ALL pages using pagination (WP API cap is 100 per request)."""
+    results, page = [], 1
+    while True:
+        batch = list_pages(per_page=100, page=page, status="any")
+        if not batch:
+            break
+        results.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return results
 
 
 def page_tree() -> list[dict]:
     """
     Return all pages as a nested tree structure.
     Each page dict gains a 'children' key with sub-pages.
+    Handles sites with more than 100 pages via automatic pagination.
     """
-    all_pages = list_pages(per_page=100, status="any")
+    all_pages = _fetch_all_pages()
     by_id = {p["id"]: {**p, "children": []} for p in all_pages}
     roots = []
     for p in by_id.values():
@@ -153,8 +156,10 @@ def _print_tree(pages: list[dict], indent: int = 0) -> None:
 
 # ── CLI ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not all([WP_URL, USERNAME, APP_PASSWORD]):
-        print("❌ 請先設定 .env：WP_URL, WP_USERNAME, WP_APP_PASSWORD")
+    try:
+        check_env()
+    except EnvironmentError as e:
+        print(e)
         sys.exit(1)
 
     action = sys.argv[1] if len(sys.argv) > 1 else "list"

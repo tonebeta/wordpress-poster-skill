@@ -4,26 +4,12 @@ WordPress REST API helper — loaded from the wordpress-poster skill.
 Usage: uv run wp_poster.py
 Requires: httpx, python-dotenv
 """
-import httpx
-import base64
-import os
 import json
+import os
 import sys
-from dotenv import load_dotenv
 
-load_dotenv()
-
-WP_URL       = os.getenv("WP_URL", "").rstrip("/")
-USERNAME     = os.getenv("WP_USERNAME", "")
-APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
-
-
-def _auth_headers() -> dict:
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-    return {
-        "Authorization": f"Basic {token}",
-        "Content-Type": "application/json",
-    }
+import httpx
+from wp_client import WP_URL, USERNAME, APP_PASSWORD, auth_headers, media_headers, check_env
 
 
 def create_post(
@@ -49,7 +35,7 @@ def create_post(
 
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
-        json=payload, headers=_auth_headers(), timeout=30,
+        json=payload, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -58,7 +44,7 @@ def create_post(
 def update_post(post_id: int, **fields) -> dict:
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        json=fields, headers=_auth_headers(), timeout=30,
+        json=fields, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -67,7 +53,7 @@ def update_post(post_id: int, **fields) -> dict:
 def get_post(post_id: int) -> dict:
     resp = httpx.get(
         f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -77,7 +63,7 @@ def list_posts(per_page: int = 10, page: int = 1, status: str = "any") -> list[d
     resp = httpx.get(
         f"{WP_URL}/wp-json/wp/v2/posts",
         params={"per_page": per_page, "page": page, "status": status},
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -87,7 +73,7 @@ def delete_post(post_id: int, force: bool = False) -> dict:
     resp = httpx.delete(
         f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
         params={"force": str(force).lower()},
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -97,7 +83,7 @@ def list_categories() -> list[dict]:
     resp = httpx.get(
         f"{WP_URL}/wp-json/wp/v2/categories",
         params={"per_page": 100},
-        headers=_auth_headers(), timeout=30,
+        headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -109,7 +95,7 @@ def create_category(name: str, slug: str = "", parent: int = 0) -> dict:
     if parent: payload["parent"] = parent
     resp = httpx.post(
         f"{WP_URL}/wp-json/wp/v2/categories",
-        json=payload, headers=_auth_headers(), timeout=30,
+        json=payload, headers=auth_headers(), timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
@@ -171,8 +157,6 @@ def upload_media(
     """
     import mimetypes
 
-    token = base64.b64encode(f"{USERNAME}:{APP_PASSWORD}".encode()).decode()
-
     if convert_webp:
         file_bytes, filename = _convert_to_webp(file_path, webp_quality, webp_lossless)
         mime_type = "image/webp"
@@ -189,11 +173,7 @@ def upload_media(
         mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or "application/octet-stream"
 
-    headers = {
-        "Authorization": f"Basic {token}",
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Type": mime_type,
-    }
+    headers = media_headers(filename, mime_type)
     if title:
         headers["X-WP-Media-Title"] = title
 
@@ -207,8 +187,10 @@ def upload_media(
 
 # ── CLI ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not all([WP_URL, USERNAME, APP_PASSWORD]):
-        print("❌ 請先設定 .env：WP_URL, WP_USERNAME, WP_APP_PASSWORD")
+    try:
+        check_env()
+    except EnvironmentError as e:
+        print(e)
         sys.exit(1)
 
     action = sys.argv[1] if len(sys.argv) > 1 else "list"
