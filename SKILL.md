@@ -23,10 +23,16 @@ Credentials are always loaded from a `.env` file — never hardcoded.
 
 | 腳本 | 功能 |
 |------|------|
-| `scripts/wp_poster.py` | Posts CRUD、媒體上傳（含 WebP 轉換）、Categories |
-| `scripts/wp_pages.py`  | Pages 完整 CRUD、層級樹狀結構 |
-| `scripts/wp_batch.py`  | 批量匯入文章（JSON / CSV）、乾跑模式 |
-| `scripts/wp_ai_writer.py` | Claude AI 自動生成文章並發布至 WordPress |
+| `scripts/wp_poster.py`    | Posts CRUD、媒體上傳（含 WebP 轉換）、Categories |
+| `scripts/wp_pages.py`     | Pages 完整 CRUD、層級樹狀結構 |
+| `scripts/wp_batch.py`     | 批量匯入文章（JSON / CSV）、乾跑模式 |
+| `scripts/wp_ai_writer.py` | Claude AI 生成內容發布、自動寫入 SEO meta |
+| `scripts/wp_seo.py`       | SEO meta 管理（Yoast / Rank Math 自動偵測）|
+
+**References:**
+| 檔案 | 說明 |
+|------|------|
+| `references/functions-php-snippet.md` | WordPress functions.php 必要設定（貼一次即可）|
 
 ---
 
@@ -246,6 +252,94 @@ uv run scripts/wp_ai_writer.py interactive
 3. Claude 呼叫 `publish_generated()` 直接發布至你的 WordPress
 
 ---
+
+
+---
+
+## 5. SEO 管理（wp_seo.py）
+
+### 前置作業（一次性）
+
+將 `references/functions-php-snippet.md` 中的 PHP 程式碼貼入 WordPress 的 `functions.php`，
+讓 Yoast / Rank Math meta 欄位可透過 REST API 寫入。
+
+### 偵測 SEO 外掛
+
+```bash
+uv run scripts/wp_seo.py detect
+# ✅ 偵測到 SEO 外掛：yoast
+```
+
+### 讀取文章 SEO 狀態
+
+```python
+from scripts.wp_seo import get_seo
+info = get_seo(post_id=42)
+# {"post_id": 42, "seo_title": "...", "meta_description": "...", ...}
+```
+
+### 更新 SEO meta
+
+```python
+from scripts.wp_seo import update_seo
+
+update_seo(
+    post_id=42,
+    seo_title="CAR-T 細胞療法最新進展 | 先勁智能",   # ≤60 字
+    meta_description="本文深入介紹 CAR-T 療法的臨床應用，涵蓋製程優化與品質管制。",  # 120–155 字
+    focus_keyword="CAR-T 細胞療法",
+    og_title="CAR-T 細胞療法最新進展",
+    og_description="深入了解 CAR-T 療法如何革新血液腫瘤治療。",
+)
+```
+
+### 批量更新 SEO（從 JSON）
+
+```bash
+# seo_data.json 格式：
+# [{"post_id": 42, "seo_title": "...", "meta_description": "..."}]
+uv run scripts/wp_seo.py batch-update seo_data.json
+```
+
+**CLI 完整用法：**
+```bash
+uv run scripts/wp_seo.py detect
+uv run scripts/wp_seo.py get 42
+uv run scripts/wp_seo.py update 42 --title "SEO標題" --desc "描述" --keyword "關鍵字"
+uv run scripts/wp_seo.py update 42 --canonical "https://..." --noindex
+uv run scripts/wp_seo.py batch-update seo_data.json
+```
+
+### AI 寫文 + 自動 SEO（wp_ai_writer.py 整合）
+
+`publish_generated()` 現在自動處理 SEO：
+
+```python
+from scripts.wp_ai_writer import publish_generated
+
+# Claude 提供 SEO 欄位
+post = publish_generated(
+    title="CAR-T 細胞療法",
+    content="<h2>背景</h2><p>...</p>",
+    seo_title="CAR-T 細胞療法最新進展 | 先勁智能",
+    meta_description="深入介紹 CAR-T 療法的臨床應用與品質管制要點。",
+    focus_keyword="CAR-T 細胞療法",
+    og_description="CAR-T 療法如何革新血液腫瘤治療",
+)
+
+# 或讓 auto_seo=True（預設）自動從 title+content 生成 SEO 欄位
+post = publish_generated(
+    title="Flow Cytometry 入門指南",
+    content="<p>...</p>",
+    auto_seo=True,  # 自動生成 seo_title / meta_description
+)
+```
+
+**SEO 最佳實踐：**
+- `seo_title` ≤ 60 字，可包含品牌名（如「| 先勁智能」）
+- `meta_description` 120–155 字，包含主要關鍵字，有吸引力
+- `focus_keyword` 為單一主要關鍵字或詞組
+- `og_title` / `og_description` 針對社群平台優化，可與 SEO title 不同
 
 ## Common Operations Reference
 
